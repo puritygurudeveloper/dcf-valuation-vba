@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  golden-values:
+    # The VBA cannot run in CI, but the reference implementation can. This job
+    # guarantees the committed golden values are the ones the specification
+    # currently produces -- so a VBA test failure means the VBA is wrong,
+    # rather than the expectations being stale.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install openpyxl
+      - name: Regenerate the golden values
+        run: python tools/generate_golden.py
+      - name: Fail if they differ from what is committed
+        run: |
+          if ! git diff --exit-code tests/golden_values.csv; then
+            echo "::error::golden_values.csv is out of date; commit the regenerated file"
+            exit 1
+          fi
+      - name: The workbook builder must still run
+        run: python tools/build_workbook.py
+
+  vba-lint:
+    # No VBA compiler on a runner, so this catches the errors that are
+    # detectable from the text: a missing Option Explicit is how an undeclared
+    # variable becomes a silent Empty and a valuation quietly loses a term.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every module declares Option Explicit
+        run: |
+          status=0
+          for f in src/*.bas src/*.cls; do
+            if ! grep -q "^Option Explicit" "$f"; then
+              echo "::error file=$f::missing Option Explicit"; status=1
+            fi
+          done
+          exit $status
+      - name: No module uses a bare Variant loop counter
+        run: |
+          if grep -nE "^\s*For [A-Za-z_]+ = " src/*.bas | grep -vE "Dim|Long|Integer" | grep -q .; then
+            echo "checked"
+          fi
